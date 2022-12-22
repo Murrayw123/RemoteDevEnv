@@ -1,0 +1,136 @@
+---
+- name: Apply terraform configuration and get instance IP address
+  hosts: localhost
+  gather_facts: no
+  vars:
+    instance_ip: "{{ ip_output.stdout | regex_replace('^\"|\"$', '') }}"
+  tasks:
+  - name: Apply terraform configuration
+    command: terraform apply -auto-approve
+    register: terraform_output
+
+  - name: Get IP address of OpenStack instance
+    command: terraform output instance_ip
+    register: ip_output
+
+  - name: Extract IP address from terraform output
+    set_fact:
+      instance_ip: "{{ ip_output.stdout | regex_replace('^\"|\"$', '') }}"
+
+  # add the new host
+  - name: Add new host to inventory
+    add_host:
+      name: "root"
+      groups: new_host
+      ansible_user: root
+      ansible_host: "{{ instance_ip }}"
+      ansible_ssh_private_key_file: ~/.ssh/personal_key
+
+  - name: Add non-root host to inventory
+    add_host:
+      name: "murray"
+      groups: new_host
+      ansible_user: murray
+      ansible_host: "{{ instance_ip }}"
+      ansible_ssh_private_key_file: ~/.ssh/personal_key
+
+- name: Configure User Accounts
+  hosts: root
+  gather_facts: no
+  tasks:
+    - name: debug root_access
+      command: uptime
+      register: root_access
+      ignore_unreachable: true
+      failed_when: root_access is unreachable
+    - block:
+      - name: create new user account
+        user:
+          name: murray
+          password: "{{ new_user_password | password_hash('sha512') }}"
+          groups: sudo
+          shell: /bin/bash
+
+      - name: make an ssh directory for murray
+        file:
+            path: /home/murray/.ssh
+            state: directory
+            owner: murray
+            group: murray
+            mode: 0700
+
+      - name: copy the public key over to the home directory
+        copy:
+          src: ~/.ssh/personal_key.pub
+          dest: /home/murray/.ssh/authorized_keys
+          owner: murray
+          group: murray
+          mode: 0600
+      when: root_access is not unreachable
+
+
+
+- name: Complete The Setup
+  hosts: murray
+  gather_facts: no
+  become: true
+
+
+  tasks:
+    - name: Update package list
+      apt:
+        update_cache: yes
+
+    - name: Install dependencies
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+        state: present
+
+    - name: Add Docker GPG key
+      shell: curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+
+    - name: Add Docker package repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable"
+        state: present
+
+    - name: Update package list
+      apt:
+        update_cache: yes
+
+    - name: Install Docker
+      apt:
+        name: docker-ce
+        state: present
+
+    - name: Add user to docker group
+      user:
+        name: murray
+        groups: docker
+        append: yes
+
+    - name: Add me to the list of ssh users
+      lineinfile:
+          path: /etc/ssh/sshd_config
+          regexp: "^AllowUsers"
+          line: "AllowUsers murray"
+          state: present
+          validate: 'sshd -t -f %s'
+
+    - name: disable password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^PasswordAuthentication"
+        line: "PasswordAuthentication no"
+        state: present
+        validate: 'sshd -t -f %s'
+
+    - name: restart ssh service
+      service:
+        name: ssh
+        state: restarted
+        enabled: yes
