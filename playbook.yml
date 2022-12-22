@@ -17,8 +17,7 @@
     set_fact:
       instance_ip: "{{ ip_output.stdout | regex_replace('^\"|\"$', '') }}"
 
-  # add the new host
-  - name: Add new host to inventory
+  - name: Add root host to inventory
     add_host:
       name: "root"
       groups: new_host
@@ -62,19 +61,26 @@
       - name: copy the public key over to the home directory
         copy:
           src: ~/.ssh/personal_key.pub
-          dest: /home/murray/.ssh/authorized_keys
+          dest: /home/murray/.ssh/
           owner: murray
           group: murray
           mode: 0600
-      when: root_access is not unreachable
 
+    - name: copy private key over
+      copy:
+          src: ~/.ssh/personal_key
+          dest: /home/murray/.ssh/
+          owner: murray
+          group: murray
+          mode: 0600
+
+  when: root_access is not unreachable
 
 
 - name: Complete The Setup
   hosts: murray
   gather_facts: no
   become: true
-
 
   tasks:
     - name: Update package list
